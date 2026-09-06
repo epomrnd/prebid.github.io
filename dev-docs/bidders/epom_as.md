@@ -58,9 +58,11 @@ Two details the table cannot hold comfortably:
 
 The parameters above are the same on both transports, and the OpenRTB payload Epom Ad Server reads is the same, so an ad unit needs no change when it moves between them.
 
+The server-side adapter is written for **Prebid Server Go**; there is no Prebid Server Java implementation. It is not in a released build yet — it is open as [prebid-server PR #4916](https://github.com/prebid/prebid-server/pull/4916), so a host that wants it today builds from that branch. A build without it refuses the impression by name rather than ignoring it: `request.imp[0].ext.prebid.bidder contains unknown bidder: epom_as`.
+
 The endpoint is reached differently. In Prebid.js the adapter builds the URL itself from `params.host`. In Prebid Server it is host-templated as `https://{% raw %}{{.Host}}{% endraw %}/hb/bid`, resolved per impression from the same `host` parameter — a Prebid Server host operator does not configure a per-publisher endpoint.
 
-Two differences are worth knowing rather than discovering. A browser request carries the reader's cookies; a server-side one carries none, so any frequency capping Epom applies per user needs `user.buyeruid` from a cookie sync. And the reader's address reaches Epom in the header the adapter forwards from `device.ip`, since on a server-to-server call the connection itself comes from the Prebid Server host rather than from the reader.
+One difference is worth knowing rather than discovering. A browser request carries the reader's cookies, and Epom's per-user frequency capping counts against the identity in one of them; a server-side request carries none, and Epom Ad Server reads no `user.buyeruid` on this path, so per-user capping has no identity to count against there. The reader's address does reach Epom: the adapter forwards it from `device.ip`, since on a server-to-server call the connection itself comes from the Prebid Server host rather than from the reader.
 
 ## Example Ad Unit Configuration
 
@@ -79,6 +81,59 @@ var adUnits = [{
   }]
 }];
 ```
+
+### Prebid Server
+
+Through a Prebid Server the same two parameters travel in the impression, under `ext.prebid.bidder`:
+
+```json
+{
+  "id": "some-request-id",
+  "imp": [{
+    "id": "leaderboard",
+    "banner": { "format": [{ "w": 728, "h": 90 }] },
+    "ext": {
+      "prebid": {
+        "bidder": {
+          "epom_as": {
+            "host": "ads.example.com",
+            "placementKey": "a4f21c9e7b"
+          }
+        }
+      }
+    }
+  }]
+}
+```
+
+`host` and `placementKey` are both required and there is no server-side default for either: the endpoint is resolved per impression from `host`, so an entry without one is not bid.
+
+A page already running Prebid.js can route the bidder server-side instead, leaving its ad units and the `bids` entry above unchanged:
+
+```javascript
+pbjs.setConfig({
+  s2sConfig: [{
+    accountId: 'the-id-the-server-issued',
+    bidders: ['epom_as'],
+    enabled: true,
+    endpoint: 'https://prebid-server.example.com/openrtb2/auction'
+  }]
+});
+```
+
+The `accountId` is issued by the Prebid Server host, not by Epom.
+
+## Registration
+
+A publisher needs two values from Epom, and the inventory has to be sold by a header-bidding tag before either is worth anything:
+
+1. Epom creates or confirms the placements and their placement keys.
+2. Epom creates an **active header-bidding tag listing those placements**. This is the step that is easy to skip and impossible to diagnose from outside: Epom Ad Server answers a bid only for a placement an active tag sells, and the placement key alone does not authorise anything — it is public by design, since it travels in every invocation code on the page.
+3. Epom hands over the serving `host` and one `placementKey` per ad unit.
+4. For a server-side integration, the publisher gets the `accountId` from their own Prebid Server host — Epom does not issue it.
+5. For a server-side integration, the host must run a Prebid Server Go build carrying `epom_as` (see above).
+
+📩 [support@epom.com](mailto:support@epom.com)
 
 ## Test Parameters
 
@@ -191,7 +246,7 @@ It forwards the standard OpenRTB privacy signals to Epom Ad Server unchanged, an
 
 The adapter sets `withCredentials: true`, so an existing Epom identity cookie — set by the ad server on its own domain, never by the adapter — reaches the auction; the ad server answers with the request origin rather than a wildcard. The adapter itself uses no storage manager and writes nothing to cookies or local storage.
 
-The Prebid.js adapter performs no user syncs. Server-side, the sync endpoint lives on each publisher's own Epom deployment, so a Prebid Server host must configure it; contact Epom to have it enabled.
+The Prebid.js adapter performs no user syncs. Server-side there is none either, and the reason is structural rather than pending: a Prebid Server syncer is one URL per bidder per host, and the only macros it can carry are the privacy signals and the redirect — `{% raw %}{{.GDPR}}{% endraw %}`, `{% raw %}{{.GDPRConsent}}{% endraw %}`, `{% raw %}{{.USPrivacy}}{% endraw %}`, `{% raw %}{{.GPP}}{% endraw %}`, `{% raw %}{{.GPPSID}}{% endraw %}`, `{% raw %}{{.RedirectURL}}{% endraw %}` and the syncer key. Nothing in it varies per impression, and Epom Ad Server is white-label: the sync endpoint lives on each publisher's own deployment, so one URL cannot serve two publishers. A host serving a single Epom deployment can configure a syncer for it; contact Epom for the URL.
 
 ## Support
 
